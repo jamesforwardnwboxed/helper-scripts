@@ -34,6 +34,13 @@ def integer(value: Any) -> int:
         return 0
 
 
+def number(value: Any) -> float:
+    try:
+        return max(0.0, float(value or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def percent(numerator: int, denominator: int) -> float:
     return (numerator / denominator * 100) if denominator else 0.0
 
@@ -106,7 +113,8 @@ def load_session(
             continue
 
         tokens = message_tokens(data)
-        if not any(tokens.values()):
+        cost = number(data.get("cost"))
+        if not any(tokens.values()) and not cost:
             continue
 
         messages.append(
@@ -116,6 +124,7 @@ def load_session(
                 "model_id": data.get("modelID"),
                 "provider_id": data.get("providerID"),
                 "finish": data.get("finish"),
+                "cost": cost,
                 **tokens,
             }
         )
@@ -234,8 +243,38 @@ def analyze(
         key: sum(message[key] for message in messages)
         for key in ("input", "output", "reasoning", "total", "cache_read", "cache_write")
     }
+    totals["cost"] = sum(message["cost"] for message in messages)
     read_messages = sum(message["cache_read"] > 0 for message in messages)
     write_messages = sum(message["cache_write"] > 0 for message in messages)
+
+    model_breakdown: dict[str, dict[str, Any]] = {}
+    for message in messages:
+        provider = message["provider_id"] or "unknown-provider"
+        model = message["model_id"] or "unknown-model"
+        key = f"{provider}/{model}"
+        breakdown = model_breakdown.setdefault(
+            key,
+            {
+                "provider": provider,
+                "model": model,
+                "messages": 0,
+                "cost": 0.0,
+                "input": 0,
+                "output": 0,
+                "cache_read": 0,
+                "cache_write": 0,
+            },
+        )
+        breakdown["messages"] += 1
+        breakdown["cost"] += message["cost"]
+        for token_key in ("input", "output", "cache_read", "cache_write"):
+            breakdown[token_key] += message[token_key]
+
+    for breakdown in model_breakdown.values():
+        breakdown["cost"] = round(breakdown["cost"], 12)
+        breakdown["cost_share_percent"] = round(
+            percent(breakdown["cost"], totals["cost"]), 2
+        )
 
     # There is no explicit invalidation record in the current schema. Count
     # one inferred invalidation per contiguous cache-read gap after a hit.
@@ -283,12 +322,20 @@ def analyze(
         "message_count": len(messages),
         "invalid_json_count": invalid_json_count,
         "totals_from_messages": totals,
+        "cost_source": (
+            "sum of assistant message data.cost values; each value is already "
+            "provider/model-specific"
+        ),
+        "cost_by_model": sorted(
+            model_breakdown.values(), key=lambda item: item["cost"], reverse=True
+        ),
         "stored_session_totals": {
             "input": integer(session["tokens_input"]),
             "output": integer(session["tokens_output"]),
             "reasoning": integer(session["tokens_reasoning"]),
             "cache_read": integer(session["tokens_cache_read"]),
             "cache_write": integer(session["tokens_cache_write"]),
+            "cost": number(session["cost"]),
         },
         "derived": {
             "effective_prompt_tokens": effective_prompt_tokens,
@@ -332,6 +379,7 @@ def print_report(report: dict[str, Any], show_timeline: bool) -> None:
     print(f"  Output:         {format_number(totals['output'])}")
     print(f"  Reasoning:      {format_number(totals['reasoning'])}")
     print(f"  Effective prompt: {format_number(derived['effective_prompt_tokens'])}")
+    print(f"  Cost:           ${totals['cost']:.8f}")
     print()
     print("Cache efficiency")
     print(f"  Input served from cache: {derived['cache_read_share_percent']:.2f}%")
@@ -350,6 +398,19 @@ def print_report(report: dict[str, Any], show_timeline: bool) -> None:
             f"  {key:11} messages={format_number(message_value):>12} "
             f"session={format_number(stored_value):>12}{marker}"
         )
+    cost_marker = "" if abs(totals["cost"] - stored["cost"]) < 1e-9 else " (DIFF)"
+    print(
+        f"  {'cost':11} messages=${totals['cost']:>11.8f} "
+        f"session=${stored['cost']:>11.8f}{cost_marker}"
+    )
+
+    print("\nCost by provider/model")
+    for breakdown in report["cost_by_model"]:
+        print(
+            f"  {breakdown['provider']}/{breakdown['model']}: "
+            f"${breakdown['cost']:.8f} ({breakdown['cost_share_percent']:.2f}%, "
+            f"{breakdown['messages']} messages)"
+        )
 
     if report["invalid_json_count"]:
         print(f"\nWarning: skipped {report['invalid_json_count']} malformed message row(s).")
@@ -362,12 +423,12 @@ def print_report(report: dict[str, Any], show_timeline: bool) -> None:
 
     if show_timeline:
         print("\nMessage timeline")
-        print("  id                                      input    cache-read  cache-write  output")
+        print("  id                                      input    cache-read  cache-write  output        cost")
         for message in report["messages"]:
             print(
                 f"  {message['id']:<40} {message['input']:>8,} "
                 f"{message['cache_read']:>11,} {message['cache_write']:>12,} "
-                f"{message['output']:>8,}"
+                f"{message['output']:>8,} ${message['cost']:.8f}"
             )
 
 
