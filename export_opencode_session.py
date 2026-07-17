@@ -352,7 +352,7 @@ code { font:11px ui-monospace, SFMono-Regular, Menlo, monospace; }
 
 
 JS = r"""
-const search = document.querySelector('[data-search]');
+const search = document.querySelector('.search');
 const messages = [...document.querySelectorAll('.message')];
 search?.addEventListener('input', event => {
   const query = event.target.value.trim().toLowerCase();
