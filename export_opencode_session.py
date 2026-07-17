@@ -296,6 +296,7 @@ a:hover { text-decoration:underline; }
 .sidebar h1 { margin:9px 0 22px; font:700 24px/1.15 Georgia, serif; color:#fff; }
 .search { width:100%; border:1px solid #41616a; border-radius:9px; background:#21434d; padding:10px 12px; color:#fff; outline:none; }
 .search::placeholder { color:#a6bec1; }
+.search-status { min-height:18px; margin-top:7px; color:#91b2b7; font-size:11px; }
 .nav-label { margin:25px 0 8px; color:#a9d4d4; font-size:11px; font-weight:800; letter-spacing:.12em; text-transform:uppercase; }
 .nav-item { display:block; padding:9px 10px; border-radius:8px; color:#d9eaeb; font-size:13px; }
 .nav-item:hover { background:#244b55; text-decoration:none; }
@@ -352,15 +353,37 @@ code { font:11px ui-monospace, SFMono-Regular, Menlo, monospace; }
 
 
 JS = r"""
-const search = document.querySelector('.search');
-const messages = [...document.querySelectorAll('.message')];
-search?.addEventListener('input', event => {
-  const query = event.target.value.trim().toLowerCase();
-  messages.forEach(message => {
-    const haystack = `${message.dataset.search || ''} ${message.textContent || ''}`.toLowerCase();
-    message.hidden = query && !haystack.includes(query);
-  });
-});
+(function () {
+  function initSearch() {
+    var search = document.querySelector('.search');
+    var status = document.querySelector('.search-status');
+    var messages = Array.prototype.slice.call(document.querySelectorAll('.message'));
+    if (!search || !status || !messages.length) return;
+
+    function updateSearch() {
+      var query = search.value.trim().toLowerCase();
+      var matches = 0;
+      messages.forEach(function (message) {
+        var haystack = (message.textContent || '').toLowerCase();
+        var visible = !query || haystack.indexOf(query) !== -1;
+        message.style.display = visible ? '' : 'none';
+        if (visible) matches += 1;
+      });
+      status.textContent = query
+        ? matches + ' matching message' + (matches === 1 ? '' : 's')
+        : messages.length + ' messages';
+    }
+
+    search.addEventListener('input', updateSearch);
+    updateSearch();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initSearch);
+  } else {
+    initSearch();
+  }
+}());
 """
 
 
@@ -399,7 +422,8 @@ def build_html(
 <body>
 <div class="shell">
 <aside class="sidebar"><div class="brand">OpenCode / session archive</div><h1>Execution log</h1>
-<input class="search" data-search type="search" placeholder="Search messages and tools...">
+<input class="search" type="search" placeholder="Search messages and tools..." aria-label="Search messages and tools">
+<div class="search-status" aria-live="polite"></div>
 <div class="nav-label">Sessions</div>{''.join(nav)}</aside>
 <main class="main">
 <header class="hero"><div><div class="eyebrow">Full session export</div><h1>{title}</h1>
