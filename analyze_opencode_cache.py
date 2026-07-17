@@ -15,6 +15,7 @@ read. Treat those transitions as a useful heuristic, not ground truth.
 from __future__ import annotations
 
 import argparse
+import curses
 import json
 import sqlite3
 import sys
@@ -120,6 +121,110 @@ def load_session(
         )
 
     return session, messages, invalid_json_count
+
+
+def load_sessions(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT id, title, directory, time_created, time_updated
+        FROM session
+        ORDER BY time_updated DESC, id DESC
+        """
+    )
+    return [dict(row) for row in rows]
+
+
+def display_title(session: dict[str, Any]) -> str:
+    title = " ".join(str(session.get("title") or "").split())
+    return title or "Untitled session"
+
+
+def clipped(text: str, width: int) -> str:
+    if width <= 0:
+        return ""
+    if len(text) <= width:
+        return text
+    if width <= 3:
+        return text[:width]
+    return text[: width - 3] + "..."
+
+
+def choose_session(stdscr: Any, sessions: list[dict[str, Any]]) -> str | None:
+    """Run a small keyboard-driven session picker and return the chosen ID."""
+    if not sessions:
+        return None
+
+    try:
+        curses.curs_set(0)
+    except curses.error:
+        pass
+    stdscr.keypad(True)
+
+    selected = 0
+    offset = 0
+    while True:
+        height, width = stdscr.getmaxyx()
+        stdscr.erase()
+
+        if height < 7 or width < 42:
+            message = "Terminal too small. Resize, or press q to quit."
+            try:
+                stdscr.addstr(0, 0, clipped(message, max(width - 1, 1)))
+            except curses.error:
+                pass
+            stdscr.refresh()
+            key = stdscr.getch()
+            if key in (ord("q"), ord("Q"), 27):
+                return None
+            continue
+
+        list_height = height - 5
+        if selected < offset:
+            offset = selected
+        if selected >= offset + list_height:
+            offset = selected - list_height + 1
+
+        try:
+            stdscr.addstr(0, 2, clipped("Select an OpenCode session", width - 4), curses.A_BOLD)
+            stdscr.addstr(1, 2, clipped("Recent sessions, newest first", width - 4), curses.A_DIM)
+
+            for row in range(list_height):
+                index = offset + row
+                if index >= len(sessions):
+                    break
+                session = sessions[index]
+                label = f"{display_title(session)} [{session['id']}]"
+                attr = curses.A_REVERSE if index == selected else curses.A_NORMAL
+                stdscr.addstr(row + 3, 2, clipped(label, width - 4).ljust(width - 4), attr)
+
+            footer = "↑/↓ move  PgUp/PgDn page  Enter select  q/Esc cancel"
+            stdscr.addstr(height - 1, 2, clipped(footer, width - 4), curses.A_DIM)
+        except curses.error:
+            pass
+        stdscr.refresh()
+
+        key = stdscr.getch()
+        if key in (curses.KEY_UP, ord("k")):
+            selected = max(0, selected - 1)
+        elif key in (curses.KEY_DOWN, ord("j")):
+            selected = min(len(sessions) - 1, selected + 1)
+        elif key in (curses.KEY_PPAGE,):
+            selected = max(0, selected - list_height)
+        elif key in (curses.KEY_NPAGE,):
+            selected = min(len(sessions) - 1, selected + list_height)
+        elif key == curses.KEY_HOME:
+            selected = 0
+        elif key == curses.KEY_END:
+            selected = len(sessions) - 1
+        elif key in (curses.KEY_ENTER, 10, 13):
+            return sessions[selected]["id"]
+        elif key in (ord("q"), ord("Q"), 27):
+            return None
+
+
+def pick_session(connection: sqlite3.Connection) -> str | None:
+    sessions = load_sessions(connection)
+    return curses.wrapper(lambda stdscr: choose_session(stdscr, sessions))
 
 
 def analyze(
@@ -270,7 +375,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Analyze OpenCode cache usage for a session."
     )
-    parser.add_argument("session_id", help="OpenCode session ID, for example ses_...")
+    parser.add_argument(
+        "session_id",
+        nargs="?",
+        help="OpenCode session ID, for example ses_... (omit to open the picker)",
+    )
     parser.add_argument(
         "--db",
         type=Path,
@@ -288,6 +397,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="include one row per assistant message in the text report",
     )
+    parser.add_argument(
+        "-i",
+        "--interactive",
+        action="store_true",
+        help="open the session picker even when a session ID is supplied",
+    )
     return parser.parse_args()
 
 
@@ -304,8 +419,25 @@ def main() -> int:
         )
         connection.row_factory = sqlite3.Row
         try:
+            if args.as_json and (args.interactive or args.session_id is None):
+                print("error: --json requires a session ID and cannot use the picker", file=sys.stderr)
+                return 2
+
+            session_id = args.session_id
+            if args.interactive or session_id is None:
+                try:
+                    session_id = pick_session(connection)
+                except curses.error as error:
+                    print(
+                        f"error: interactive picker requires a terminal ({error})",
+                        file=sys.stderr,
+                    )
+                    return 2
+                if session_id is None:
+                    return 0
+
             session, messages, invalid_json_count = load_session(
-                connection, args.session_id
+                connection, session_id
             )
         finally:
             connection.close()
