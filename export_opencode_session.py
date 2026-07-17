@@ -321,6 +321,7 @@ h1,h2 { font-family:Georgia, "Times New Roman", serif; letter-spacing:-.025em; }
 .session-summary { display:flex; flex-wrap:wrap; gap:8px 18px; margin-bottom:15px; color:var(--muted); font-size:12px; }
 .session-summary span:not(:first-child) { padding-left:18px; border-left:1px solid var(--line); }
 .message { margin:14px 0; border:1px solid var(--line); border-radius:13px; background:var(--card); box-shadow:0 5px 18px rgba(32,54,66,.045); overflow:hidden; scroll-margin-top:20px; }
+.message.search-hidden { display:none !important; }
 .message.user { border-left:4px solid var(--blue); }
 .message.assistant { border-left:4px solid var(--accent); }
 .message-header { display:flex; justify-content:space-between; gap:20px; padding:13px 17px; background:#fbfcfc; border-bottom:1px solid var(--line); }
@@ -366,7 +367,7 @@ JS = r"""
       messages.forEach(function (message) {
         var haystack = (message.textContent || '').toLowerCase();
         var visible = !query || haystack.indexOf(query) !== -1;
-        message.style.display = visible ? '' : 'none';
+        message.classList.toggle('search-hidden', !visible);
         if (visible) matches += 1;
       });
       status.textContent = query
